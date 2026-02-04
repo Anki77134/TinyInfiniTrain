@@ -16,8 +16,49 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     // REF:
     // =================================== 作业 ===================================
 
-    auto output = std::make_shared<Tensor>();
-    return {output};
+    // Get dimensions
+    const auto &input_dims = input->Dims();   // [*, M, K]
+    const auto &other_dims = other->Dims();   // [*, K, N]
+
+    // Check compatibility
+    CHECK_GE(input_dims.size(), 2) << "Input must have at least 2 dimensions";
+    CHECK_GE(other_dims.size(), 2) << "Other must have at least 2 dimensions";
+    CHECK_EQ(input_dims.back(), other_dims[other_dims.size() - 2])
+        << "Incompatible dimensions for matrix multiplication: K dimension must match";
+
+    // Get matrix dimensions
+    const int64_t M = input_dims[input_dims.size() - 2];
+    const int64_t K = input_dims.back();
+    const int64_t N = other_dims.back();
+
+    // Calculate batch size
+    const int64_t input_batch = std::accumulate(input_dims.rbegin() + 2, input_dims.rend(), 1, std::multiplies<int64_t>());
+    const int64_t other_batch = std::accumulate(other_dims.rbegin() + 2, other_dims.rend(), 1, std::multiplies<int64_t>());
+
+    // Calculate output dimensions [*, M, N]
+    auto output_dims = input_dims;
+    output_dims.back() = N;
+
+    // Create output tensor
+    auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32);
+
+    // Perform batched matrix multiplication
+    const float* input_ptr = static_cast<const float*>(input->DataPtr());
+    const float* other_ptr = static_cast<const float*>(other->DataPtr());
+    float* output_ptr = static_cast<float*>(output->DataPtr());
+
+    for (int64_t b = 0; b < input_batch; ++b) {
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            input_mat(input_ptr + b * M * K, M, K);
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            other_mat(other_ptr + b * K * N, K, N);
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            output_mat(output_ptr + b * M * N, M, N);
+
+        output_mat = input_mat * other_mat;
+    }
+
+    return output;
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
@@ -28,8 +69,49 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
     // REF:
     // =================================== 作业 ===================================
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
+    // Forward: C = A @ B
+    // Backward:
+    //   grad_A = grad_C @ B^T
+    //   grad_B = A^T @ grad_C
+
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
+
+    // Get matrix dimensions
+    const int64_t M = input_dims[input_dims.size() - 2];
+    const int64_t K = input_dims.back();
+    const int64_t N = other_dims.back();
+
+    // Calculate batch size
+    const int64_t batch = std::accumulate(input_dims.rbegin() + 2, input_dims.rend(), 1, std::multiplies<int64_t>());
+
+    // Create gradient tensors with same shape as inputs
+    auto grad_input = std::make_shared<Tensor>(input_dims, DataType::kFLOAT32);
+    auto grad_other = std::make_shared<Tensor>(other_dims, DataType::kFLOAT32);
+
+    // Perform batched gradient computation
+    const float* input_ptr = static_cast<const float*>(input->DataPtr());
+    const float* other_ptr = static_cast<const float*>(other->DataPtr());
+    const float* grad_output_ptr = static_cast<const float*>(grad_output->DataPtr());
+    float* grad_input_ptr = static_cast<float*>(grad_input->DataPtr());
+    float* grad_other_ptr = static_cast<float*>(grad_other->DataPtr());
+
+    for (int64_t b = 0; b < batch; ++b) {
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            input_mat(input_ptr + b * M * K, M, K);
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            other_mat(other_ptr + b * K * N, K, N);
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            grad_output_mat(grad_output_ptr + b * M * N, M, N);
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            grad_input_mat(grad_input_ptr + b * M * K, M, K);
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+            grad_other_mat(grad_other_ptr + b * K * N, K, N);
+
+        grad_input_mat = grad_output_mat * other_mat.transpose();
+        grad_other_mat = input_mat.transpose() * grad_output_mat;
+    }
+
     return {grad_input, grad_other};
 }
 

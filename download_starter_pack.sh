@@ -3,8 +3,9 @@
 # Get the directory of the script
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
-# Base URL
-BASE_URL="https://huggingface.co/datasets/karpathy/llmc-starter-pack/resolve/main/"
+# Base URL - 使用 HuggingFace 镜像站加速下载
+# 原地址: https://huggingface.co/datasets/karpathy/llmc-starter-pack/resolve/main/
+BASE_URL="https://hf-mirror.com/datasets/karpathy/llmc-starter-pack/resolve/main/"
 
 # Directory paths based on script location
 SAVE_DIR_PARENT="$SCRIPT_DIR/Data"
@@ -36,9 +37,11 @@ download_file() {
         FILE_PATH="${SAVE_DIR_PARENT}/${FILE_NAME}"
     fi
 
-    # Download the file
+    # Download the file with retry and progress bar
     echo "Downloading $FILE_NAME..."
-    if curl -s -L -o "$FILE_PATH" "$FILE_URL"; then
+    # 使用 -L 跟随重定向, --retry 重试次数, --retry-delay 重试间隔,
+    # --connect-timeout 连接超时, -# 显示进度条
+    if curl -# -L --retry 5 --retry-delay 3 --connect-timeout 30 -o "$FILE_PATH" "$FILE_URL"; then
         echo "✅ Success: Downloaded $FILE_NAME to $FILE_PATH"
         return 0
     else

@@ -78,6 +78,39 @@ Tokenizer::Tokenizer(const std::string &filepath) {
     | magic(4B) | version(4B) | vocab_size(4B) | reserved(1012B) | token词表数据       |
     ----------------------------------------------------------------------------------
     ===================================== 作业 ===================================== */
+
+    // 1. Open file
+    std::ifstream ifs(filepath, std::ios::binary);
+    CHECK(ifs.is_open()) << "Failed to open tokenizer file: " << filepath;
+
+    // 2. Read header (1024 bytes)
+    auto header = ReadSeveralBytesFromIfstream(1024, &ifs);
+
+    // 3. Parse header fields
+    int magic = BytesToType<int>(header, 0);
+    int version = BytesToType<int>(header, 4);
+    int vocab_size = BytesToType<int>(header, 8);
+
+    magic_number_ = magic;
+    vocab_size_ = vocab_size;
+
+    // 4. Get EOT token based on version
+    CHECK(kEotMap.count(magic)) << "Unknown magic number: " << magic;
+    eot_token_ = kEotMap.at(magic);
+
+    // 5. Read vocabulary table
+    token_table_.resize(vocab_size);
+    for (int i = 0; i < vocab_size; ++i) {
+        // Read string length (4 bytes)
+        auto len_bytes = ReadSeveralBytesFromIfstream(4, &ifs);
+        int str_len = BytesToType<int>(len_bytes, 0);
+
+        // Read string data
+        auto str_bytes = ReadSeveralBytesFromIfstream(str_len, &ifs);
+        token_table_[i] = std::string(str_bytes.begin(), str_bytes.end());
+    }
+
+    ifs.close();
 }
 
 std::string Tokenizer::Decode(uint32_t token_id) const {
@@ -85,7 +118,9 @@ std::string Tokenizer::Decode(uint32_t token_id) const {
     TODO：实现token_id到文本的转换
     功能描述：根据token_id返回对应的文本片段
     ===================================== 作业 ===================================== */
-    return "";
+
+    CHECK_LT(token_id, vocab_size_) << "Token ID out of range: " << token_id;
+    return token_table_[token_id];
 }
 
 void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_size, uint32_t sequence_length,
@@ -104,13 +139,36 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
     std::cout << "The meaning of life is";
 
     auto x = std::make_shared<infini_train::Tensor>(x_tensor.To(device));
-    uint64_t kRngState = kRngState;
+    uint64_t rng_state = kRngState;  // Initialize from global constant
     LOG(INFO) << "start generate text:";
     for (int t = prompt_len; t < text_length; t++) {
         /* ===================================== 作业 =====================================
         TODO：实现单步文本生成逻辑
         HINT：调用model.Forward推理获取logits，根据推理结果进行随机采样，调用Decode获取文本结果
         ===================================== 作业 ===================================== */
+
+        // 1. Forward pass to get logits for current position
+        auto logits = model.Forward({x})[0]->Slice(-1, t, t + 1);
+
+        // 2. Apply softmax to get probabilities
+        auto probs = infini_train::nn::function::Softmax(logits, -1);
+
+        // Move probs to CPU for sampling
+        auto probs_cpu = probs->To(Device(DeviceType::kCPU, 0));
+
+        // 3. Sample next token from probability distribution
+        float *probs_data = static_cast<float *>(probs_cpu.DataPtr());
+        float coin = RandomF32(rng_state);  // Use local rng_state
+        uint32_t next_token = SampleMult(probs_data, vocab_size_, coin);
+
+        // 4. Decode and print the token
+        std::cout << Decode(next_token);
+        std::cout.flush();
+
+        // 5. Update input for next iteration (if not at end)
+        if (t + 1 < sequence_length) {
+            x_buff[t + 1] = next_token;
+        }
     }
     std::cout << std::endl;
 }

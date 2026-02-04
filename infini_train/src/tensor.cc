@@ -283,7 +283,44 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     // HINT:
     // =================================== 作业 ===================================
 
-    return std::make_shared<Tensor>();
+    int ndim = dims_.size();
+
+    // Handle negative indices
+    if (start < 0) {
+        start += ndim;
+    }
+    if (end < 0) {
+        end += ndim;
+    }
+
+    // Validate indices
+    CHECK_GE(start, 0) << "start index out of range";
+    CHECK_LT(start, ndim) << "start index out of range";
+    CHECK_GE(end, 0) << "end index out of range";
+    CHECK_LT(end, ndim) << "end index out of range";
+    CHECK_LE(start, end) << "start must be <= end";
+
+    // Calculate the flattened dimension size
+    int64_t flatten_dim = 1;
+    for (int i = start; i <= end; ++i) {
+        flatten_dim *= dims_[i];
+    }
+
+    // Construct new shape
+    std::vector<int64_t> new_dims;
+    // Copy dimensions before start
+    for (int i = 0; i < start; ++i) {
+        new_dims.push_back(dims_[i]);
+    }
+    // Add flattened dimension
+    new_dims.push_back(flatten_dim);
+    // Copy dimensions after end
+    for (int i = end + 1; i < ndim; ++i) {
+        new_dims.push_back(dims_[i]);
+    }
+
+    // Return new view
+    return Contiguous()->View(new_dims);
 }
 
 std::shared_ptr<Tensor> Tensor::Squeeze(int64_t dim) {
@@ -358,6 +395,19 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
     // TODO：实现自动微分反向传播
     // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
     // =================================== 作业 ===================================
+
+    // 1. Initialize gradient if not provided (default to all ones)
+    if (!gradient) {
+        gradient = std::make_shared<Tensor>(dims_, dtype_, GetDevice());
+        gradient->Fill<float>(1.0f);
+    }
+
+    // 2. Trigger backward propagation through the computation graph
+    // The backward is implemented through Function::BackwardPartial which
+    // automatically handles topological order and gradient accumulation
+    if (grad_fn_) {
+        grad_fn_->BackwardPartial(gradient, output_idx_);
+    }
 }
 
 void Tensor::ZeroGrad() {

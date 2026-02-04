@@ -118,6 +118,18 @@ protected:
         text_length = 64;    // 生成文本长度
         learning_rate = 1e-4;    //学习率
 
+        // Check if required data files exist, skip test if not available
+        std::ifstream llmc_check(llmc_filepath);
+        std::ifstream input_check(input_bin);
+        std::ifstream tokenizer_check(tokenizer_bin);
+
+        if (!llmc_check.good() || !input_check.good() || !tokenizer_check.good()) {
+            GTEST_SKIP() << "Required data files not found. Please run download_starter_pack.sh to download:\n"
+                         << "  - " << llmc_filepath << " (exists: " << llmc_check.good() << ")\n"
+                         << "  - " << input_bin << " (exists: " << input_check.good() << ")\n"
+                         << "  - " << tokenizer_bin << " (exists: " << tokenizer_check.good() << ")";
+        }
+
         Initialize();
 
         LOG(INFO)<< "Initialize() finished!";

@@ -29,7 +29,52 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     // REF:
     // =================================== 作业 ===================================
 
-    auto output = std::make_shared<Tensor>();
+    // Get dimensions: input [*, M, K], other [*, K, N]
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
+
+    // Check compatibility
+    CHECK_GE(input_dims.size(), 2) << "Input must have at least 2 dimensions";
+    CHECK_GE(other_dims.size(), 2) << "Other must have at least 2 dimensions";
+    CHECK_EQ(input_dims.back(), other_dims[other_dims.size() - 2])
+        << "Incompatible dimensions for matrix multiplication: K dimension must match";
+
+    // Calculate dimensions for cuBLAS
+    const int64_t M = input_dims[input_dims.size() - 2];
+    const int64_t K = input_dims.back();
+    const int64_t N = other_dims.back();
+
+    // Calculate batch size
+    const int64_t batch = std::accumulate(input_dims.rbegin() + 2, input_dims.rend(), 1, std::multiplies<int64_t>());
+
+    // Calculate output dimensions [*, M, N]
+    auto output_dims = input_dims;
+    output_dims.back() = N;
+
+    // Create output tensor
+    auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32, input->GetDevice());
+    output->Fill<float>(0.0f);
+
+    // Perform batched matrix multiplication using cuBLAS
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    const float* input_ptr = static_cast<const float*>(input->DataPtr());
+    const float* other_ptr = static_cast<const float*>(other->DataPtr());
+    float* output_ptr = static_cast<float*>(output->DataPtr());
+
+    for (int64_t b = 0; b < batch; ++b) {
+        // output[M, N] = input[M, K] * other[K, N]
+        // In column-major: output^T[N, M] = other^T[N, K] * input^T[K, M]
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha,
+                                 other_ptr + b * K * N, N,
+                                 input_ptr + b * M * K, K, &beta,
+                                 output_ptr + b * M * N, N));
+    }
+
+    CUBLAS_CHECK(cublasDestroy(handle));
     return output;
 }
 
@@ -41,8 +86,55 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
     // REF:
     // =================================== 作业 ===================================
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
+    // Forward: C = A @ B
+    // Backward:
+    //   grad_A = grad_C @ B^T
+    //   grad_B = A^T @ grad_C
+
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
+
+    const int64_t M = input_dims[input_dims.size() - 2];
+    const int64_t K = input_dims.back();
+    const int64_t N = other_dims.back();
+
+    // Calculate batch size
+    const int64_t batch = std::accumulate(input_dims.rbegin() + 2, input_dims.rend(), 1, std::multiplies<int64_t>());
+
+    // Create gradient tensors
+    auto grad_input = std::make_shared<Tensor>(input_dims, DataType::kFLOAT32, grad_output->GetDevice());
+    auto grad_other = std::make_shared<Tensor>(other_dims, DataType::kFLOAT32, grad_output->GetDevice());
+    grad_input->Fill<float>(0.0f);
+    grad_other->Fill<float>(0.0f);
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    const float* input_ptr = static_cast<const float*>(input->DataPtr());
+    const float* other_ptr = static_cast<const float*>(other->DataPtr());
+    const float* grad_output_ptr = static_cast<const float*>(grad_output->DataPtr());
+    float* grad_input_ptr = static_cast<float*>(grad_input->DataPtr());
+    float* grad_other_ptr = static_cast<float*>(grad_other->DataPtr());
+
+    for (int64_t b = 0; b < batch; ++b) {
+        // grad_input[M, K] = grad_output[M, N] * other^T[N, K]
+        // In column-major: grad_input^T[K, M] = other[K, N] * grad_output^T[N, M]
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, K, M, N, &alpha,
+                                 other_ptr + b * K * N, N,
+                                 grad_output_ptr + b * M * N, N, &beta,
+                                 grad_input_ptr + b * M * K, K));
+
+        // grad_other[K, N] = input^T[K, M] * grad_output[M, N]
+        // In column-major: grad_other^T[N, K] = grad_output^T[N, M] * input[M, K]
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, N, K, M, &alpha,
+                                 grad_output_ptr + b * M * N, N,
+                                 input_ptr + b * M * K, K, &beta,
+                                 grad_other_ptr + b * K * N, N));
+    }
+
+    CUBLAS_CHECK(cublasDestroy(handle));
     return {grad_input, grad_other};
 }
 

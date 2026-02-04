@@ -61,14 +61,72 @@ TinyShakespeareFile ReadTinyShakespeareFile(const std::string &path, size_t sequ
     | magic(4B) | version(4B) | num_toks(4B) | reserved(1012B) | token数据           |
     ----------------------------------------------------------------------------------
        =================================== 作业 =================================== */
+
+    // 1. Open file
+    std::ifstream ifs(path, std::ios::binary);
+    CHECK(ifs.is_open()) << "Failed to open file: " << path;
+
+    // 2. Read header (1024 bytes)
+    auto header = ReadSeveralBytesFromIfstream(1024, &ifs);
+
+    // 3. Parse header fields
+    int magic = BytesToType<int>(header, 0);
+    int version = BytesToType<int>(header, 4);
+    int num_tokens = BytesToType<int>(header, 8);
+
+    // 4. Determine token type based on magic (not version!)
+    CHECK(kTypeMap.count(magic)) << "Unknown magic: " << magic << " (version: " << version << ")";
+    auto type = kTypeMap.at(magic);
+    size_t token_size = kTypeToSize.at(type);
+    auto data_type = kTypeToDataType.at(type);
+
+    // 5. Calculate usable tokens (must be divisible by sequence_length)
+    int num_batches = num_tokens / sequence_length;
+    int usable_tokens = num_batches * sequence_length;
+    size_t usable_data_size = usable_tokens * token_size;
+
+    // Read only usable token data
+    auto data = ReadSeveralBytesFromIfstream(usable_data_size, &ifs);
+
+    // 6. Create tensor as INT64 (required by embedding layer)
+    std::vector<int64_t> dims = {static_cast<int64_t>(num_batches), static_cast<int64_t>(sequence_length)};
+    infini_train::Tensor tensor(dims, DataType::kINT64);
+
+    // 7. Convert token data to INT64 format
+    int64_t* tensor_data = static_cast<int64_t*>(tensor.DataPtr());
+    if (type == TinyShakespeareType::kUINT16) {
+        const uint16_t* src = reinterpret_cast<const uint16_t*>(data.data());
+        for (int i = 0; i < usable_tokens; ++i) {
+            tensor_data[i] = static_cast<int64_t>(src[i]);
+        }
+    } else if (type == TinyShakespeareType::kUINT32) {
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(data.data());
+        for (int i = 0; i < usable_tokens; ++i) {
+            tensor_data[i] = static_cast<int64_t>(src[i]);
+        }
+    }
+
+    // 7. Construct and return result
+    TinyShakespeareFile result;
+    result.tensor = tensor;
+    result.dims = dims;
+    result.type = type;
+
+    ifs.close();
+    return result;
 }
 } // namespace
 
-TinyShakespeareDataset::TinyShakespeareDataset(const std::string &filepath, size_t sequence_length) {
+TinyShakespeareDataset::TinyShakespeareDataset(const std::string &filepath, size_t sequence_length)
+    : text_file_(ReadTinyShakespeareFile(filepath, sequence_length)),
+      sequence_length_(sequence_length),
+      sequence_size_in_bytes_(sequence_length * sizeof(int64_t)),  // INT64 is 8 bytes
+      num_samples_(text_file_.dims[0] - 1) {
     // =================================== 作业 ===================================
     // TODO：初始化数据集实例
     // HINT: 调用ReadTinyShakespeareFile加载数据文件
     // =================================== 作业 ===================================
+    // All initialization done in the initializer list above
 }
 
 std::pair<std::shared_ptr<infini_train::Tensor>, std::shared_ptr<infini_train::Tensor>>
@@ -76,6 +134,7 @@ TinyShakespeareDataset::operator[](size_t idx) const {
     CHECK_LT(idx, text_file_.dims[0] - 1);
     std::vector<int64_t> dims = std::vector<int64_t>(text_file_.dims.begin() + 1, text_file_.dims.end());
     // x: (seq_len), y: (seq_len) -> stack -> (bs, seq_len) (bs, seq_len)
+    // Now using INT64, so each token is 8 bytes
     return {std::make_shared<infini_train::Tensor>(text_file_.tensor, idx * sequence_size_in_bytes_, dims),
             std::make_shared<infini_train::Tensor>(text_file_.tensor, idx * sequence_size_in_bytes_ + sizeof(int64_t),
                                                    dims)};
